@@ -11,4 +11,4 @@ Currently, groups are imported as empties, meaning you have to create an action 
 
 A proper tutorial will come eventually, but for now just look at [this video](https://discord.com/channels/480157509261459468/846130782065131521/1377098630321668289). ((if you cant see it join [this server](https://discord.gg/pgUvzTE5E5)))
 
-Adapted from https://git.gauf.re/antoine/ttyd-stuff/src/branch/master/blender_io_ttyd_agb
+Huge credit goes to Diagamma for their original AGB importer. https://git.gauf.re/antoine/ttyd-stuff/src/branch/master/blender_io_ttyd_agb
