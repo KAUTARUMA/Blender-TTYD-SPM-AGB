@@ -31,8 +31,7 @@ def get_simple_mat_for_tex(texture_path):
     tex_image.image = bpy.data.images.load(texture_path)
     new_material.node_tree.links.new(bsdf.inputs['Base Color'], tex_image.outputs['Color'])
     new_material.node_tree.links.new(bsdf.inputs['Alpha'], tex_image.outputs['Alpha'])
-    new_material.blend_method = 'CLIP'
-    # new_material.shadow_method = 'NONE'
+    new_material.surface_render_method = 'BLENDED'
 
     materials[texture_path] = new_material
     return new_material
