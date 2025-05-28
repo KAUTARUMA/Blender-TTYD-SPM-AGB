@@ -203,10 +203,10 @@ if __name__ == "__main__":
     TEX_DIR = os.path.join(SCRIPT_DIR, TEX_DIR)
     
     if not os.path.exists(MODEL_FILE):
-        raise FileNotFoundError(f"Model file '{MODEL_FILE}' does not exist.")
+        raise FileNotFoundError(f"Model file does not exist: {repr(MODEL_FILE)}")
     
     if not os.path.exists(TEX_DIR):
-        raise FileNotFoundError(f"Texture directory '{TEX_DIR}' does not exist.")
+        raise FileNotFoundError(f"Texture directory does not exist: {repr(TEX_DIR)}")
     
     with open(MODEL_FILE, 'rb') as f:
         agb = agb_read(f)
