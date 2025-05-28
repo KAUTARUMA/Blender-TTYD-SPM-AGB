@@ -44,6 +44,8 @@ ZERO_VEC3 = Vec3(0, 0, 0)
 ZERO_VECTOR = Vector()
 ZERO_LIST3 = [0, 0, 0]
 
+armature = None
+
 def is_nan(x):
     return Decimal(x).is_nan()
 
@@ -68,6 +70,9 @@ def get_tsrf(obj):
     if has_transform_anim_map.get(obj, False):
         return TRANSFORM_SUPERRESOLUTION_FACTOR
     return 1
+
+def get_bone_shape(bone):
+    return next((child for child in armature.children if child.name == bone.name), None)
 
 # unfinished and suboptimal/sloppy
 def material_bullshit(obj):
@@ -173,16 +178,24 @@ def add_texture(image, ext_mode):
     return int(image.name.split('--')[1].split('.')[0])
 
 
-def object_to_group(obj, ident=0):
+def object_to_group(bone, ident=0):
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    obj_eval = obj.evaluated_get(depsgraph)
 
-    has_shape = obj.type == 'MESH'
+    shape = get_bone_shape(bone)
+    has_shape = shape is not None
+
+    shape_eval = None
+
     if has_shape:
-        mesh_base_counts[obj] = (len(obj_eval.data.vertices), len(obj_eval.data.polygons), len(obj_eval.data.loops))
+        shape_eval = shape.evaluated_get(depsgraph)
+    else:
+        shape_eval = armature.evaluated_get(depsgraph).pose.bones.get(bone.name)
+
+    if has_shape:
+        mesh_base_counts[shape] = (len(shape_eval.data.vertices), len(shape_eval.data.polygons), len(shape_eval.data.loops))
 
         vtx_count_before = len(agb.vertex_positions)
-        for vertex in obj_eval.data.vertices.values():
+        for vertex in shape_eval.data.vertices.values():
             vtxid = len(agb.vertex_positions)
             vtxpath2id[repr(vertex)] = vtxid
 
@@ -192,13 +205,13 @@ def object_to_group(obj, ident=0):
             agb.vertex_normals.append(agbvec(vertex.normal))
 
             # find base bbox
-            vtxco_world = obj_eval.matrix_world @ vertex.co
+            vtxco_world = shape_eval.matrix_world @ vertex.co
             for ix in range(3):
                 co = vtxco_world[ix]
                 agb.header.bbox_min[ix] = min(agb.header.bbox_min[ix], co)
                 agb.header.bbox_max[ix] = max(agb.header.bbox_max[ix], co)
 
-        mat, colors, tex_img, ext_mode, uvs = material_bullshit(obj)
+        mat, colors, tex_img, ext_mode, uvs = material_bullshit(shape)
 
         backface_culling = False
         if mat:
@@ -213,11 +226,11 @@ def object_to_group(obj, ident=0):
         if not uvs:
             agb.vertex_texture_coordinates.append(Vec2(0, 0))
 
-        visited_vertices = [False] * len(obj_eval.data.vertices)
+        visited_vertices = [False] * len(shape_eval.data.vertices)
         adjusted_loop_ix = 0
         vtx_loop_ix_map_iguess = {}
         vtxtexcoord_count_before = len(agb.vertex_texture_coordinates)
-        for lix, loop in enumerate(obj_eval.data.loops):
+        for lix, loop in enumerate(shape_eval.data.loops):
             if visited_vertices[loop.vertex_index]:
                 continue
 
@@ -240,7 +253,7 @@ def object_to_group(obj, ident=0):
         vtxnrm_indices_count_before = len(agb.vertex_normal_indices)
         vtxclr_indices_count_before = len(agb.vertex_color_indices)
         vtxtexcoord_indices_count_before = len(agb.vertex_texture_coordinate_indices)
-        for polygon in obj_eval.data.polygons.values():
+        for polygon in shape_eval.data.polygons.values():
             vertex_count = len(polygon.vertices)
             agb.polygons.append(AGBPolygon(
                 vertex_base_index=len(agb.vertex_position_indices) - vtxpos_indices_count_before,
@@ -260,7 +273,7 @@ def object_to_group(obj, ident=0):
                 unk_0=0, # ?
                 tpl_index=tex_id,
                 wbUnused=0, # ?
-                unk_c="Hello from Blender! :)",
+                unk_c="Hello to you too, Diagamma! :D",
                 unk_38=[0, 0], # ????
             )
             texture_count_before = len(agb.textures)
@@ -297,7 +310,7 @@ def object_to_group(obj, ident=0):
             sampler_indices=[sampler_count_before] + [-1] * 7,
             sampler_source_texture_coordinate_indices=[0 if tex_img else -1] + [-1] * 7, # ?
             polygon_base_index=polygon_count_before,
-            polygon_count=len(obj_eval.data.polygons),
+            polygon_count=len(shape_eval.data.polygons),
 
             vertex_position_indices_base_index=vtxpos_indices_count_before,
             vertex_normal_base_indices_base_index=vtxnrm_indices_count_before,
@@ -307,19 +320,19 @@ def object_to_group(obj, ident=0):
         subshape_count_before = len(agb.subshapes)
         agb.subshapes.append(subshape)
 
-        shape = AGBShape(
-            name=obj.data.name,
+        AGBshape = AGBShape(
+            name=bone.name,
 
             vertex_position_data_base_index=vtx_count_before,
-            vertex_position_data_count=len(obj_eval.data.vertices),
+            vertex_position_data_count=len(shape_eval.data.vertices),
             vertex_normal_data_base_index=vtx_count_before,
-            vertex_normal_data_count=len(obj_eval.data.vertices),
+            vertex_normal_data_count=len(shape_eval.data.vertices),
             vertex_color_data_base_index=vtxclr_count_before,
-            vertex_color_data_count=len(obj_eval.data.vertices) if colors else 1,
+            vertex_color_data_count=len(shape_eval.data.vertices) if colors else 1,
 
             # only supporting one texcoord thingy right now
             vertex_texture_coordinate0_data_base_index=vtxtexcoord_count_before,
-            vertex_texture_coordinate0_data_count=len(obj_eval.data.vertices) if uvs else 0,
+            vertex_texture_coordinate0_data_count=len(shape_eval.data.vertices) if uvs else 0,
             vertex_texture_coordinate1_data_base_index=0,
             vertex_texture_coordinate1_data_count=0,
             vertex_texture_coordinate2_data_base_index=0,
@@ -341,17 +354,23 @@ def object_to_group(obj, ident=0):
             cull_mode=0 if backface_culling else 3,
         )
         shape_count_before = len(agb.shapes)
-        agb.shapes.append(shape)
+        agb.shapes.append(AGBshape)
 
-    anim_data = obj.animation_data
+    anim_data = armature.animation_data
     if anim_data:
         for track in anim_data.nla_tracks:
-            handle_nla_track(track, obj)
-    obj_tsrf = get_tsrf(obj)
+            handle_nla_track(track, bone)
+    
+    obj_tsrf = get_tsrf(bone)
 
-    translation = obj_eval.matrix_local.to_translation()
-    rotation = obj_eval.matrix_local.to_euler()
-    scale = obj_eval.matrix_local.to_scale()
+    if hasattr(shape_eval, "matrix_local"):
+        mat = shape_eval.matrix_local
+    else:
+        mat = shape_eval.matrix
+    
+    translation = mat.to_translation()
+    rotation = mat.to_euler()
+    scale = mat.to_scale()
     group_transform = AGBGroupTransform(
         translation=agbvec(translation * SUPERRESOLUTION_FACTOR * obj_tsrf),
         scale=agbvec(scale * obj_tsrf),
@@ -370,7 +389,7 @@ def object_to_group(obj, ident=0):
     )
 
     group = AGBGroup(
-        name=obj.name,
+        name=bone.name,
         next_group_id=-1,
         child_group_id=-1,
         shape_id=shape_count_before if has_shape else -1,
@@ -382,12 +401,14 @@ def object_to_group(obj, ident=0):
     )
 
     prev_child_group_ix = -1
-    for child in reversed(obj.children):
+
+    for child in reversed(bone.children):
         child_group_ix = object_to_group(child, ident+1)
 
         agb.groups[child_group_ix].next_group_id = prev_child_group_ix
 
         prev_child_group_ix = child_group_ix
+    
     group.child_group_id = prev_child_group_ix
 
     group.transform_base_index = gti2fi(len(agb.group_transform_data))
@@ -401,15 +422,18 @@ def object_to_group(obj, ident=0):
     # (e.g. if the first visibility keyframe in all exported actions used by an object
     #  sets the object to hidden, then maybe the default state is visible)
     group.visibility_group_id = len(agb.visibility_groups)
-    agb.visibility_groups.append(int(not obj.hide_render))
+    if has_shape:
+        agb.visibility_groups.append(int(not shape.hide_render))
+    else:
+        agb.visibility_groups.append(int(True))
 
     group_count_before = len(agb.groups)
     agb.groups.append(group)
-    obj_group_map[obj] = group_count_before
+    obj_group_map[bone] = group_count_before
 
     if obj_tsrf != 1:
         scale_undo_grp = AGBGroup(
-            name=f'scale_undo_{obj.name}',
+            name=f'scale_undo_{bone.name}',
             next_group_id=-1,
             child_group_id=group_count_before,
             shape_id=-1,
@@ -439,23 +463,23 @@ def object_to_group(obj, ident=0):
     return group_count_before # cur group ix
 
 
-def handle_nla_track(track, obj):
+def handle_nla_track(track, bone):
     if track.name[0] == '!' and len(track.strips) == 1:
         anim_name = track.name[1:]
         if anim_name not in nlatrack_map:
             nlatrack_map[anim_name] = {}
 
-        assert(obj not in nlatrack_map[anim_name])
+        assert(bone not in nlatrack_map[anim_name])
 
         action = track.strips[0].action
-        nlatrack_map[anim_name][obj] = (track, action)
+        nlatrack_map[anim_name][bone] = (track, action)
 
         for fcurve in action.fcurves.values():
             # we don't include rotation because it can't be upscaled
             if not fcurve.mute and fcurve.data_path in ['location', 'scale']:
                 # the object has a scale transform animation,
                 # so we need to apply the superres factor
-                has_transform_anim_map[obj] = True
+                has_transform_anim_map[bone] = True
                 break
 
 
@@ -525,12 +549,12 @@ def bake_actions_to_anims():
 
         # visibility animation
         frames_visibility = defaultdict(dict)
-        for obj, (track, action) in tracks.items():
-            group_ix = obj_group_map[obj]
+        for bone, (track, action) in tracks.items():
+            group_ix = obj_group_map[bone]
             group = agb.groups[group_ix]
 
             for fcurve in action.fcurves:
-                if fcurve.mute or fcurve.data_path != 'hide_render':
+                if fcurve.data_path != 'hide_render':
                     continue
 
                 for keyframe in fcurve.keyframe_points:
@@ -584,7 +608,7 @@ def bake_actions_to_anims():
                 keyframe.visibility_group_delta_base_index = visgroup_delta_count_before
                 keyframe.visibility_group_delta_count = visgroup_delta_count_keyframe
         cur_anim.data.visibility_group_delta_count = len(cur_anim.data.visibility_group_deltas)
-
+        
         # for sampling, we need to use *only* the tracks related to the animation,
         # otherwise, other stuff would interfere and break it
         orig_muted_tracks = {}
@@ -594,8 +618,8 @@ def bake_actions_to_anims():
                 obj.animation_data_create()
 
             selected_track = None
-            if obj in tracks:
-                selected_track = tracks[obj][0]
+            if any(bone in tracks for bone in obj.pose.bones):
+                selected_track = tracks[bone][0]
 
             for track in obj.animation_data.nla_tracks:
                 orig_muted_tracks[track] = track.mute
@@ -615,11 +639,15 @@ def bake_actions_to_anims():
 
         # group transform animation handling
         frames_grptrans = {}
-        for obj, (track, action) in tracks.items():
-            group_ix = obj_group_map[obj]
+        for bone, (track, action) in tracks.items():
+            if not hasattr(bone, 'bone') or bone.bone is None:
+                print(bone, " is not bone!")
+                continue
+
+            group_ix = obj_group_map[bone]
             group = agb.groups[group_ix]
 
-            obj_tsrf = get_tsrf(obj)
+            obj_tsrf = get_tsrf(bone)
             for frame in range(base_info.anim_start, int(action.frame_range[1]) + 1):
                 if frame not in frames_grptrans:
                     frames_grptrans[frame] = {}
@@ -627,11 +655,13 @@ def bake_actions_to_anims():
                 scene.frame_set(frame)
 
                 depsgraph = bpy.context.evaluated_depsgraph_get()
-                obj_eval = obj.evaluated_get(depsgraph)
 
-                translation = obj_eval.matrix_local.to_translation() * SUPERRESOLUTION_FACTOR * obj_tsrf
-                rotation = Vector((degrees(r) / 2 for r in obj_eval.matrix_local.to_euler()))
-                scale = obj_eval.matrix_local.to_scale() * obj_tsrf
+                bone_eval = armature.evaluated_get(depsgraph).pose.bones.get(bone.name)
+                mat = bone_eval.matrix
+
+                translation = mat.to_translation() * SUPERRESOLUTION_FACTOR * obj_tsrf
+                rotation = Vector((degrees(r) / 2 for r in mat.to_euler()))
+                scale = mat.to_scale() * obj_tsrf
 
                 for vix, vec in enumerate([translation, scale, rotation]):
                     for cix in range(3):
@@ -967,6 +997,8 @@ def bake_actions_to_anims():
 
 
 if __name__ == "__main__":
+    print("\n\n --- STARTING EXPORT SCRIPT --- \n\n")
+
     agb = AGBFile(
         header=AGBHeader(
             fixed_size_data_end=0, # this is automatically adjusted by the serializer
@@ -979,6 +1011,7 @@ if __name__ == "__main__":
             bbox_min=Vector(),
             bbox_max=Vector(),
         ),
+
         shapes=[],
         polygons=[],
 
@@ -1024,15 +1057,22 @@ if __name__ == "__main__":
     orig_frame = scene.frame_current
     scene.frame_set(0)
 
-    exported_collection = bpy.data.collections[MODEL_NAME]
+    collection = bpy.data.collections[MODEL_NAME]
+
+    # get first armature
+    armature = next((obj for obj in collection.all_objects if obj.type == 'ARMATURE'), None)
+    assert (armature is not None)
+    assert (armature.type == 'ARMATURE')
+
+    exported_collection = collection
+
     orig_pose_positions = {}
-    for obj in exported_collection.all_objects.values():
-        if obj.type == 'ARMATURE':
-            orig_pose_positions[obj] = obj.data.pose_position
-            obj.data.pose_position = 'REST'
+    orig_pose_positions[armature] = armature.data.pose_position
+    armature.data.pose_position = 'REST'
 
     # make AGB groups and everything they're related to (except for animations) from blender objects
-    root_objects = [o for o in exported_collection.children.data.objects if not o.parent]
+    root_objects = [o for o in armature.pose.bones if not o.parent]    
+
     prev_root_obj_group_ix = -1
     for object in reversed(root_objects):
         root_obj_group_ix = object_to_group(object)
@@ -1086,6 +1126,8 @@ if __name__ == "__main__":
 
     # restore the frame we were at originally
     scene.frame_set(orig_frame)
+
+    armature.data.pose_position = 'POSE'
 
     with open(OUTPUT_PATH, 'wb') as f:
         agb_write(agb, f)
