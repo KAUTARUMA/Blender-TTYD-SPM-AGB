@@ -16,7 +16,7 @@ sys.path.append(SCRIPT_DIR)
 
 from ttyd_agb_structs import *
 
-MODEL_NAME = 'n_machi_c_bar'
+MODEL_NAME = 'FRY_mekri'
 TEX_DIR = MODEL_NAME + '_tex'
 
 armature = bpy.data.objects.new('Armature', bpy.data.armatures.new('Armature'))
@@ -214,6 +214,7 @@ if __name__ == "__main__":
     new_collection = bpy.data.collections.new(agb.header.model_name)
     bpy.context.scene.collection.children.link(new_collection)
 
+    armature.name = agb.header.model_name
     new_collection.objects.link(armature)
 
     root_group = agb.groups[-1]
@@ -243,36 +244,35 @@ if __name__ == "__main__":
 
     scene = bpy.context.scene
 
-    for obj in objects:
-        for anim in agb.anims:
-            data = anim.data
-            if not data:
-                continue
+    for anim in agb.anims:
+        data = anim.data
+        if not data:
+            continue
 
-            anim_name = "!" + anim.name
-            action = bpy.data.actions.new(anim_name)
+        anim_name = "!" + anim.name
+        action = bpy.data.actions.new(anim_name)
+        action.use_fake_user = True
 
-            #for i in range(len(data.keyframes)):
-            #    keyframe = data.keyframes[i]
-            #    vertex_position_delta = data.vertex_position_deltas[i] if i < len(data.vertex_position_deltas) else None
-            #    vertex_normal_delta = data.vertex_normal_deltas[i] if i < len(data.vertex_normal_deltas) else None
-            #    texture_coordinate_transform_delta = data.texture_coordinate_transform_deltas[i] if i < len(data.texture_coordinate_transform_deltas) else None
-            #    visibility_group_delta = data.visibility_group_deltas[i] if i < len(data.visibility_group_deltas) else None
-            #    group_transform_data_delta = data.group_transform_data_deltas[i] if i < len(data.group_transform_data_deltas) else None
-            #    anim_data_type8_data = data.anim_data_type8_data[i] if i < len(data.anim_data_type8_data) else None
-            
-            #if not obj.animation_data:
-            #    obj.animation_data_create()
-            
-            # so it shows up in game
-            #fcurve = action.fcurves.new(data_path='location', index=1)
-            #fcurve.keyframe_points.insert(1, 0.0)
-            #fcurve.keyframe_points.insert(15, 0.0)
-            #fcurve.update()
-            
-            #track = obj.animation_data.nla_tracks.new()
-            #track.name = anim_name
-            #strip = track.strips.new(name=anim_name, start=1, action=action)
-            #strip.name = anim_name
+        for bone in armature.pose.bones:
+            for property in ['location', 'rotation_quaternion', 'scale']:
+                prop_data = getattr(bone, property, None)
+                if prop_data is None:
+                    continue
+                
+                for i in range(4 if property == 'rotation_quaternion' else 3):
+                    fcurve = action.fcurves.new(data_path='pose.bones["{}"].{}'.format(bone.name, property), index=i)
+                    if len(prop_data) > i:
+                        fcurve.keyframe_points.insert(1, prop_data[i])
+                        fcurve.keyframe_points.insert(5, prop_data[i])
+        
+        if not armature.animation_data:
+           armature.animation_data_create()
+        
+        track = armature.animation_data.nla_tracks.new()
+        track.name = anim_name
+        track.mute = True
+
+        strip = track.strips.new(name=anim_name, start=1, action=action)
+        strip.name = anim_name
         
     print("\n\n-- FINISHED IMPORT --\n\n")
