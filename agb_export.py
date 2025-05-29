@@ -618,7 +618,6 @@ def bake_actions_to_anims():
                 obj.animation_data_create()
 
             selected_track = None
-            if any(bone in tracks for bone in obj.pose.bones):
             if obj.type == 'ARMATURE' and any(bone in tracks for bone in obj.pose.bones):
                 selected_track = tracks[bone][0]
 
