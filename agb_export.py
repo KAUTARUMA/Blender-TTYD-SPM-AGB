@@ -619,6 +619,7 @@ def bake_actions_to_anims():
 
             selected_track = None
             if any(bone in tracks for bone in obj.pose.bones):
+            if obj.type == 'ARMATURE' and any(bone in tracks for bone in obj.pose.bones):
                 selected_track = tracks[bone][0]
 
             for track in obj.animation_data.nla_tracks:
