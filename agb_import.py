@@ -22,11 +22,12 @@ TEX_DIR = MODEL_NAME + '_tex'
 armature = bpy.data.objects.new('Armature', bpy.data.armatures.new('Armature'))
 
 materials = {}
-def get_simple_mat_for_tex(texture_path):
+def get_simple_mat_for_tex(texture_path, name):
     if texture_path in materials:
         return materials[texture_path]
 
     new_material = bpy.data.materials.new('mat')
+    new_material.name = name
     new_material.use_nodes = True
     bsdf = new_material.node_tree.nodes['Principled BSDF']
     # bsdf.inputs['Specular'].default_value = 0
@@ -107,13 +108,16 @@ def group_to_object(group, collection, parent=None, parent_group=None): # parent
 
         shape_vert_normals = [None] * len(prebuilt_shape_vertices)
         for subshape in agb.subshapes[shape.subshape_base_index:shape.subshape_base_index + shape.subshape_count]:
-            assert(subshape.sampler_count == 1)
+            
+            # i have no clue if im doing this right
+            for sampler_index in subshape.sampler_indices:
+                if sampler_index == -1: continue
 
-            sampler = agb.samplers[subshape.sampler_indices[0]]
-            texture = agb.textures[sampler.texture_base_id]
+                sampler = agb.samplers[sampler_index]
+                texture = agb.textures[sampler.texture_base_id]
 
-            new_material = get_simple_mat_for_tex(os.path.join(TEX_DIR, f'{MODEL_NAME}--{texture.tpl_index}.png'))
-            shape_mesh.materials.append(new_material)
+                new_material = get_simple_mat_for_tex(os.path.join(TEX_DIR, f'{MODEL_NAME}--{texture.tpl_index}.png'), f'{MODEL_NAME}_{texture.tpl_index}')
+                shape_mesh.materials.append(new_material)
 
             for polygon in agb.polygons[subshape.polygon_base_index:subshape.polygon_base_index + subshape.polygon_count]:
                 assert(polygon.vertex_count >= 3)
