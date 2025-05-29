@@ -1,3 +1,4 @@
+from collections import defaultdict
 import re
 import unicodedata
 import bmesh
@@ -85,9 +86,9 @@ def group_transform_to_matrices(gt, joint_parent_gt=None):
 
 
 # note: this only supports one sampler
-objects = []
+agb_data = {}
 scale_matrices = {}
-deferred_parenting = []
+
 def group_to_object(group, collection, parent=None, parent_group=None): # parent is (group, obj)
     has_shape = group.shape_id > -1
 
@@ -186,14 +187,12 @@ def group_to_object(group, collection, parent=None, parent_group=None): # parent
         bone.parent = parent
         bone.use_connect = False
 
-    if has_shape:
-        deferred_parenting.append((cur_object, bone.name))
-    else:
+    if not has_shape:
         bpy.data.objects.remove(cur_object, do_unlink=True)
         
     #endregion
 
-    objects.append(bone)
+    agb_data[bone.name] = {"group": group, "object": cur_object if has_shape else None}
 
     if group.child_group_id > -1:
         group_to_object(agb.groups[group.child_group_id], collection, bone, group)
@@ -231,7 +230,11 @@ if __name__ == "__main__":
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
-    for cur_object, bone_name in deferred_parenting:
+    for bone_name in agb_data.keys():
+        bone_data = agb_data[bone_name]
+        cur_object = bone_data["object"]
+        if cur_object is None: continue
+
         matrix_world = cur_object.matrix_world.copy()
 
         cur_object.parent = armature
@@ -240,13 +243,17 @@ if __name__ == "__main__":
 
         bone_matrix_world = armature.matrix_world @ armature.pose.bones[bone_name].matrix
         cur_object.matrix_basis = bone_matrix_world.inverted() @ matrix_world
-
-        objects.append(cur_object)
     #endregion
 
-    agb.anims = agb.anims
-
     scene = bpy.context.scene
+
+    if not armature.animation_data:
+        armature.animation_data_create()
+
+    track = armature.animation_data.nla_tracks.new()
+    track.name = f'{armature.name}_rig'
+
+    track_position = 1
 
     for anim in agb.anims:
         data = anim.data
@@ -257,26 +264,87 @@ if __name__ == "__main__":
         action = bpy.data.actions.new(anim_name)
         action.use_fake_user = True
 
+        #region group visibility parsing
+        frames_visibility = defaultdict(dict)
+        current_visibility = {
+            vg_id: agb.visibility_groups[vg_id]
+            for vg_id in range(len(agb.visibility_groups))
+        }
+
+        for keyframe in data.keyframes:
+            visgroup_id = 0
+            for i in range(keyframe.visibility_group_delta_count):
+                delta = data.visibility_group_deltas[keyframe.visibility_group_delta_base_index + i]
+                visgroup_id += delta.index_delta
+
+                if delta.visible == 0:
+                    continue
+                elif delta.visible == 1:
+                    current_visibility[visgroup_id] = 1
+                elif delta.visible == -1:
+                    current_visibility[visgroup_id] = 0
+
+                frames_visibility[keyframe.time][visgroup_id] = current_visibility[visgroup_id]
+        #regionend
+
         for bone in armature.pose.bones:
             for property in ['location', 'rotation_quaternion', 'scale']:
                 prop_data = getattr(bone, property, None)
                 if prop_data is None:
                     continue
-                
+
                 for i in range(4 if property == 'rotation_quaternion' else 3):
-                    fcurve = action.fcurves.new(data_path='pose.bones["{}"].{}'.format(bone.name, property), index=i)
+                    fcurve = action.fcurves.new(data_path=f'pose.bones["{bone.name}"].{property}', index=i)
                     if len(prop_data) > i:
                         fcurve.keyframe_points.insert(1, prop_data[i])
-                        fcurve.keyframe_points.insert(5, prop_data[i])
-        
-        if not armature.animation_data:
-           armature.animation_data_create()
-        
-        track = armature.animation_data.nla_tracks.new()
-        track.name = anim_name
-        track.mute = True
+                        fcurve.keyframe_points.insert(data.keyframe_count, prop_data[i])
 
-        strip = track.strips.new(name=anim_name, start=1, action=action)
+            #region object visibility actions
+            if bone.name not in agb_data.keys(): continue
+                
+            object = agb_data[bone.name]["object"]
+            if object is None:
+                continue
+
+            group = agb_data[bone.name]["group"]
+            group_id = group.visibility_group_id
+
+            if not object.animation_data:
+                object.animation_data_create()
+            
+            obj_track_name = f'{armature.name}_{object.name}'
+            obj_track = None
+            for nla_track in object.animation_data.nla_tracks:
+                if nla_track.name == obj_track_name:
+                    obj_track = nla_track
+                    break
+            
+            if obj_track is None:
+                obj_track = object.animation_data.nla_tracks.new()
+                obj_track.name = obj_track_name
+            
+            action_name = f"{anim.name}_{object.name}_vis"
+            obj_action = bpy.data.actions.new(name=action_name)
+            object.animation_data.action = obj_action
+                
+            visibility_action = object.animation_data.action
+
+            for path in {"hide_render", "hide_viewport"}:
+                fcurve = visibility_action.fcurves.new(data_path=path)
+
+                for frame in sorted(frames_visibility.keys()):
+                    visibility_at_frame = frames_visibility[frame].get(group_id)
+                    if visibility_at_frame is not None:
+                        hidden = not visibility_at_frame
+                        fcurve.keyframe_points.insert(frame, hidden)
+            
+            strip = obj_track.strips.new(name=action_name, start=track_position, action=obj_action)
+            strip.name = action_name
+            #regionend
+
+        strip = track.strips.new(name=anim_name, start=track_position, action=action)
         strip.name = anim_name
+
+        track_position += data.keyframe_count
         
     print("\n\n-- FINISHED IMPORT --\n\n")
