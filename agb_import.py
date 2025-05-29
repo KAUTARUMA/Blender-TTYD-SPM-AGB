@@ -1,3 +1,5 @@
+import re
+import unicodedata
 import bmesh
 import bpy
 import json
@@ -14,9 +16,10 @@ sys.path.append(SCRIPT_DIR)
 
 from ttyd_agb_structs import *
 
-
-MODEL_NAME = 'FRY_dash'
+MODEL_NAME = 'FRY_mekri'
 TEX_DIR = MODEL_NAME + '_tex'
+
+armature = bpy.data.objects.new('Armature', bpy.data.armatures.new('Armature'))
 
 materials = {}
 def get_simple_mat_for_tex(texture_path):
@@ -83,7 +86,8 @@ def group_transform_to_matrices(gt, joint_parent_gt=None):
 # note: this only supports one sampler
 objects = []
 scale_matrices = {}
-def group_to_object(group, collection, parent=None): # parent is (group, obj)
+deferred_parenting = []
+def group_to_object(group, collection, parent=None, parent_group=None): # parent is (group, obj)
     has_shape = group.shape_id > -1
 
     if has_shape:
@@ -144,17 +148,17 @@ def group_to_object(group, collection, parent=None): # parent is (group, obj)
         shape_mesh.normals_split_custom_set_from_vertices(shape_vert_normals)
 
     cur_object = bpy.data.objects.new(group.name, shape_mesh if has_shape else None)
+    
     collection.objects.link(cur_object)
 
     gt = agb.group_transform_data[group.corrected_transform_index]
-    parent_gt = agb.group_transform_data[parent[0].corrected_transform_index] if parent else None
+    parent_gt = None
+    if parent_group:
+        parent_gt = agb.group_transform_data[parent_group.corrected_transform_index]
 
     translation, rotation, scale = group_transform_to_matrices(gt, parent_gt if group.is_joint else None)
     scale_matrices[cur_object] = scale
     transform = translation @ rotation @ scale
-
-    if parent:
-        cur_object.parent = parent[1]
 
     rot_pivot = gt.transform_rotation_pivot
     origin_offset = Matrix.Translation(Vector((-rot_pivot.x / gt.scale.x, -rot_pivot.y / gt.scale.y, -rot_pivot.z / gt.scale.z)))
@@ -162,17 +166,33 @@ def group_to_object(group, collection, parent=None): # parent is (group, obj)
         transform = transform @ origin_offset.inverted()
         cur_object.data.transform(origin_offset)
 
-    if cur_object.parent and cur_object.parent.type == 'MESH':
-        parent_pivot = parent_gt.transform_rotation_pivot
-        parent_scale = scale_matrices[cur_object.parent]
-        transform = parent_scale.inverted() @ Matrix.Translation(Vector((-parent_pivot.x, -parent_pivot.y, -parent_pivot.z))) @ parent_scale @ transform
+    # if cur_object.parent and cur_object.parent.type == 'MESH':
+    #     parent_pivot = parent_gt.transform_rotation_pivot
+    #     parent_scale = scale_matrices[cur_object.parent]
+    #     transform = parent_scale.inverted() @ Matrix.Translation(Vector((-parent_pivot.x, -parent_pivot.y, -parent_pivot.z))) @ parent_scale @ transform
 
     cur_object.matrix_local = transform
 
-    objects.append(cur_object)
+    #region dumb bone hack
+    bone = armature.data.edit_bones.new(cur_object.name)
+    bone.head = cur_object.location
+    bone.tail = cur_object.location + Vector((0, 1, 0))
+
+    if parent:
+        bone.parent = parent
+        bone.use_connect = False
+
+    if has_shape:
+        deferred_parenting.append((cur_object, bone.name))
+    else:
+        bpy.data.objects.remove(cur_object, do_unlink=True)
+        
+    #endregion
+
+    objects.append(bone)
 
     if group.child_group_id > -1:
-        group_to_object(agb.groups[group.child_group_id], collection, (group, cur_object))
+        group_to_object(agb.groups[group.child_group_id], collection, bone, group)
     if group.next_group_id > -1:
         group_to_object(agb.groups[group.next_group_id], collection, parent)
 
@@ -183,10 +203,10 @@ if __name__ == "__main__":
     TEX_DIR = os.path.join(SCRIPT_DIR, TEX_DIR)
     
     if not os.path.exists(MODEL_FILE):
-        raise FileNotFoundError(f"Model file '{MODEL_FILE}' does not exist.")
+        raise FileNotFoundError(f"Model file does not exist: {repr(MODEL_FILE)}")
     
     if not os.path.exists(TEX_DIR):
-        raise FileNotFoundError(f"Texture directory '{TEX_DIR}' does not exist.")
+        raise FileNotFoundError(f"Texture directory does not exist: {repr(TEX_DIR)}")
     
     with open(MODEL_FILE, 'rb') as f:
         agb = agb_read(f)
@@ -194,46 +214,65 @@ if __name__ == "__main__":
     new_collection = bpy.data.collections.new(agb.header.model_name)
     bpy.context.scene.collection.children.link(new_collection)
 
+    armature.name = agb.header.model_name
+    new_collection.objects.link(armature)
+
     root_group = agb.groups[-1]
+
+    #region object parsing
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode='EDIT')
+
     group_to_object(root_group, new_collection)
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    for cur_object, bone_name in deferred_parenting:
+        matrix_world = cur_object.matrix_world.copy()
+
+        cur_object.parent = armature
+        cur_object.parent_type = 'BONE'
+        cur_object.parent_bone = bone_name
+
+        bone_matrix_world = armature.matrix_world @ armature.pose.bones[bone_name].matrix
+        cur_object.matrix_basis = bone_matrix_world.inverted() @ matrix_world
+
+        objects.append(cur_object)
+    #endregion
 
     agb.anims = agb.anims
 
     scene = bpy.context.scene
 
-    for obj in objects:
-        for anim in agb.anims:
-            data = anim.data
-            if not data:
-                continue
+    for anim in agb.anims:
+        data = anim.data
+        if not data:
+            continue
 
-            anim_name = "!" + anim.name
-            action = bpy.data.actions.new(anim_name)
+        anim_name = "!" + anim.name
+        action = bpy.data.actions.new(anim_name)
+        action.use_fake_user = True
 
-            #for i in range(len(data.keyframes)):
-            #    keyframe = data.keyframes[i]
-            #    vertex_position_delta = data.vertex_position_deltas[i] if i < len(data.vertex_position_deltas) else None
-            #    vertex_normal_delta = data.vertex_normal_deltas[i] if i < len(data.vertex_normal_deltas) else None
-            #    texture_coordinate_transform_delta = data.texture_coordinate_transform_deltas[i] if i < len(data.texture_coordinate_transform_deltas) else None
-            #    visibility_group_delta = data.visibility_group_deltas[i] if i < len(data.visibility_group_deltas) else None
-            #    group_transform_data_delta = data.group_transform_data_deltas[i] if i < len(data.group_transform_data_deltas) else None
-            #    anim_data_type8_data = data.anim_data_type8_data[i] if i < len(data.anim_data_type8_data) else None
-            
-            if not obj.animation_data:
-                obj.animation_data_create()
-            
-            # show it shows up in game
-            fcurve = action.fcurves.new(data_path='location', index=1)
-            fcurve.keyframe_points.insert(1, 0.0)
-            fcurve.keyframe_points.insert(15, 0.0)
-            fcurve.update()
-            
-            track = obj.animation_data.nla_tracks.new()
-            track.name = anim_name
-            strip = track.strips.new(name=anim_name, start=1, action=action)
-            strip.name = anim_name
+        for bone in armature.pose.bones:
+            for property in ['location', 'rotation_quaternion', 'scale']:
+                prop_data = getattr(bone, property, None)
+                if prop_data is None:
+                    continue
+                
+                for i in range(4 if property == 'rotation_quaternion' else 3):
+                    fcurve = action.fcurves.new(data_path='pose.bones["{}"].{}'.format(bone.name, property), index=i)
+                    if len(prop_data) > i:
+                        fcurve.keyframe_points.insert(1, prop_data[i])
+                        fcurve.keyframe_points.insert(5, prop_data[i])
+        
+        if not armature.animation_data:
+           armature.animation_data_create()
+        
+        track = armature.animation_data.nla_tracks.new()
+        track.name = anim_name
+        track.mute = True
 
-    
-    print(agb.header.anims_offset)
+        strip = track.strips.new(name=anim_name, start=1, action=action)
+        strip.name = anim_name
         
     print("\n\n-- FINISHED IMPORT --\n\n")
