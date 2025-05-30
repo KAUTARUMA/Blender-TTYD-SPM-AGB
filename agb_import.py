@@ -17,7 +17,7 @@ sys.path.append(SCRIPT_DIR)
 
 from ttyd_agb_structs import *
 
-MODEL_NAME = 'FRY_mekri'
+MODEL_NAME = 'FRY_slit'
 TEX_DIR = MODEL_NAME + '_tex'
 
 armature = bpy.data.objects.new('Armature', bpy.data.armatures.new('Armature'))
@@ -248,11 +248,6 @@ if __name__ == "__main__":
 
     if not armature.animation_data:
         armature.animation_data_create()
-
-    track = armature.animation_data.nla_tracks.new()
-    track.name = f'{armature.name}_rig'
-
-    track_position = 1
     
     scene.render.fps = 60
     # animation parsing
@@ -260,10 +255,13 @@ if __name__ == "__main__":
         data = anim.data
         if not data:
             continue
-
-        anim_name = "!" + anim.name
-        action = bpy.data.actions.new(anim_name)
+        
+        action = bpy.data.actions.new(f'!{anim.name}_rig')
         action.use_fake_user = True
+
+        track = armature.animation_data.nla_tracks.new()
+        track.name = f'!{anim.name}'
+        track.mute = True
 
         #region group visibility parsing
         frames_visibility = defaultdict(dict)
@@ -311,21 +309,21 @@ if __name__ == "__main__":
                 8: ("rotation_euler", 2),
 
                 # additional channels that i have no idea what to do with
-                9: ("[\"joint_post_rotation\"]", 0),
-                10: ("[\"joint_post_rotation\"]", 1),
-                11: ("[\"joint_post_rotation\"]", 2),
-                12: ("[\"rotation_pivot\"]", 0),
-                13: ("[\"rotation_pivot\"]", 1),
-                14: ("[\"rotation_pivot\"]", 2),
-                15: ("[\"scale_pivot\"]", 0),
-                16: ("[\"scale_pivot\"]", 1),
-                17: ("[\"scale_pivot\"]", 2),
-                18: ("[\"rotation_offset\"]", 0),
-                19: ("[\"rotation_offset\"]", 1),
-                20: ("[\"rotation_offset\"]", 2),
-                21: ("[\"scale_offset\"]", 0),
-                22: ("[\"scale_offset\"]", 1),
-                23: ("[\"scale_offset\"]", 2),
+                9: ("joint_post_rotation", 0),
+                10: ("joint_post_rotation", 1),
+                11: ("joint_post_rotation", 2),
+                12: ("rotation_pivot", 0),
+                13: ("rotation_pivot", 1),
+                14: ("rotation_pivot", 2),
+                15: ("scale_pivot", 0),
+                16: ("scale_pivot", 1),
+                17: ("scale_pivot", 2),
+                18: ("rotation_offset", 0),
+                19: ("rotation_offset", 1),
+                20: ("rotation_offset", 2),
+                21: ("scale_offset", 0),
+                22: ("scale_offset", 1),
+                23: ("scale_offset", 2),
             }
 
             # reconstruct absolute values per transform offset
@@ -361,10 +359,11 @@ if __name__ == "__main__":
                     frame_values[frame][abs_index] = (new_value, delta.tangent_in_deg, delta.tangent_out_deg)
 
                 # fill in any values not modified this frame with previous values
-                for i in range(base_id, base_id + len(channel_indices)):
-                    if i not in frame_values[frame]:
-                        if i in current_values:
-                            frame_values[frame][i] = (current_values[i], None, None)
+                # commented out because i think this causes unintended behavior with the easing but idk
+                # for i in range(base_id, base_id + len(channel_indices)):
+                #     if i not in frame_values[frame]:
+                #         if i in current_values:
+                #             frame_values[frame][i] = (current_values[i], None, None)
             
             # Apply keyframes to fcurves
             for i in range(len(channel_indices)):
@@ -375,7 +374,8 @@ if __name__ == "__main__":
                 data_path, axis = channel_indices[i]
 
                 fcurve = action.fcurves.new(data_path=f'pose.bones["{bone.name}"].{data_path}', index=axis)
-
+                fcurve.keyframe_points.insert(0, getattr(bone, data_path)[axis])
+                
                 for frame, values in frame_values.items():
                     if abs_index in values:
                         delta_info = values[abs_index]
@@ -408,16 +408,8 @@ if __name__ == "__main__":
             if not object.animation_data:
                 object.animation_data_create()
             
-            obj_track_name = f'{armature.name}_{object.name}'
-            obj_track = None
-            for nla_track in object.animation_data.nla_tracks:
-                if nla_track.name == obj_track_name:
-                    obj_track = nla_track
-                    break
-            
-            if obj_track is None:
-                obj_track = object.animation_data.nla_tracks.new()
-                obj_track.name = obj_track_name
+            obj_track = object.animation_data.nla_tracks.new()
+            obj_track.name = f'{anim.name}_{object.name}_vis'
             
             action_name = f"{anim.name}_{object.name}_vis"
             obj_action = bpy.data.actions.new(name=action_name)
@@ -425,26 +417,19 @@ if __name__ == "__main__":
                 
             visibility_action = object.animation_data.action
 
-            for path in {"hide_render", "hide_viewport"}:
-                fcurve = visibility_action.fcurves.new(data_path=path)
+            fcurve = visibility_action.fcurves.new(data_path="hide_viewport")
 
-                for frame in sorted(frames_visibility.keys()):
-                    visibility_at_frame = frames_visibility[frame].get(group_id)
-                    if visibility_at_frame is not None:
-                        hidden = not visibility_at_frame
-                        fcurve.keyframe_points.insert(frame, hidden)
+            for frame in sorted(frames_visibility.keys()):
+                visibility_at_frame = frames_visibility[frame].get(group_id)
+                if visibility_at_frame is not None:
+                    hidden = not visibility_at_frame
+                    fcurve.keyframe_points.insert(frame, hidden)
             
-            strip = obj_track.strips.new(name=action_name, start=track_position, action=obj_action)
+            strip = obj_track.strips.new(name=action_name, start=1, action=obj_action)
             strip.name = action_name
             #regionend
-
-        strip = track.strips.new(name=anim_name, start=track_position, action=action)
-        strip.name = anim_name
-
-        latest_keyframe = 0
-        for keyframe in data.keyframes:
-            if keyframe.time > latest_keyframe: latest_keyframe = keyframe.time
         
-        track_position += math.ceil(latest_keyframe + 1)
+        strip = track.strips.new(name=action.name, start=1, action=action)
+        strip.name = action.name
         
     print("\n\n-- FINISHED IMPORT --\n\n")

@@ -16,7 +16,7 @@ sys.path.append(SCRIPT_DIR)
 from ttyd_agb_structs import *
 
 # name of the collection to export
-MODEL_NAME = 'FRY_dash'
+MODEL_NAME = 'FRY_slit'
 
 # path to save the exported model to
 OUTPUT_PATH = os.path.join(SCRIPT_DIR, 'exports', f'{MODEL_NAME}')
@@ -517,16 +517,6 @@ def bake_actions_to_anims():
             if frame_end > base_info.anim_end:
                 base_info.anim_end = frame_end
 
-            # and while we're at it let's check for unsupported keyframe positions
-            for fcurve in action.fcurves:
-                for keyframe in fcurve.keyframe_points:
-                    frame = keyframe.co[0]
-
-                    assert(frame == int(frame)) # is not float (we don't support sub-frames)
-
-                    # see the comment block on visibility in object_to_group for details on this
-                    assert(frame >= frame_start or fcurve.data_path == 'hide_render')
-
         # prebuild the keyframe list starting at 0, so that indexing by frame works
         # unused keyframes get thrown away at the end
         for frame in range(base_info.anim_end + 1):
@@ -553,8 +543,16 @@ def bake_actions_to_anims():
             group_ix = obj_group_map[bone]
             group = agb.groups[group_ix]
 
-            for fcurve in action.fcurves:
-                if fcurve.data_path != 'hide_render':
+            shape = get_bone_shape(bone)
+            if shape is None: continue
+
+            visibility_track = next((obj_track for obj_track in shape.animation_data.nla_tracks if obj_track.name == f'{track.name[1:]}_{bone.name}_vis'), None)
+            if visibility_track is None: continue
+
+            visibility_action = visibility_track.strips[0].action
+
+            for fcurve in visibility_action.fcurves:
+                if fcurve.data_path != 'hide_viewport':
                     continue
 
                 for keyframe in fcurve.keyframe_points:
