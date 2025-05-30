@@ -256,11 +256,13 @@ if __name__ == "__main__":
         if not data:
             continue
         
-        action = bpy.data.actions.new(f'!{anim.name}_rig')
+        # why the hell is base info a table lol
+        anim_name = f'!' + ('@' if data.base_info[0].loop == 1 else '') + f'{anim.name}'
+        action = bpy.data.actions.new(anim_name)
         action.use_fake_user = True
 
         track = armature.animation_data.nla_tracks.new()
-        track.name = f'!{anim.name}'
+        track.name = anim_name
         track.mute = True
 
         #region group visibility parsing

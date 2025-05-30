@@ -74,6 +74,15 @@ def get_tsrf(obj):
 def get_bone_shape(bone):
     return next((child for child in armature.children if child.name == bone.name), None)
 
+def get_clean_track_name(name):
+    if name.startswith('!'):
+        name = name[1:]
+    
+    if name.startswith('@'):
+        name = name[1:]
+    
+    return name
+
 # unfinished and suboptimal/sloppy
 def material_bullshit(obj):
     noret = (None, None, None, None, None)
@@ -174,7 +183,6 @@ def add_texture(image, ext_mode):
     #tpl_image_map[image] = tex_count_before
     #return tex_count_before
 
-    print(int(image.name.split('--')[1].split('.')[0]))
     return int(image.name.split('--')[1].split('.')[0])
 
 
@@ -462,10 +470,10 @@ def object_to_group(bone, ident=0):
 
     return group_count_before # cur group ix
 
-
+loop_info = {}
 def handle_nla_track(track, bone):
     if track.name[0] == '!' and len(track.strips) == 1:
-        anim_name = track.name[1:]
+        anim_name = get_clean_track_name(track.name)
         if anim_name not in nlatrack_map:
             nlatrack_map[anim_name] = {}
 
@@ -473,6 +481,7 @@ def handle_nla_track(track, bone):
 
         action = track.strips[0].action
         nlatrack_map[anim_name][bone] = (track, action)
+        loop_info[anim_name] = track.name[1] == "@"
 
         for fcurve in action.fcurves.values():
             # we don't include rotation because it can't be upscaled
@@ -491,7 +500,7 @@ def bake_actions_to_anims():
             name=anim_name,
             data=AGBAnimationData(
                 base_info=[AGBAnimationBaseInfo(
-                  loop=1,
+                  loop=loop_info[anim_name],
                   anim_start=math.inf,
                   anim_end=-math.inf,
                 )],
@@ -546,7 +555,7 @@ def bake_actions_to_anims():
             shape = get_bone_shape(bone)
             if shape is None: continue
 
-            visibility_track = next((obj_track for obj_track in shape.animation_data.nla_tracks if obj_track.name == f'{track.name[1:]}_{bone.name}_vis'), None)
+            visibility_track = next((obj_track for obj_track in shape.animation_data.nla_tracks if obj_track.name == f'{get_clean_track_name(track.name)}_{bone.name}_vis'), None)
             if visibility_track is None: continue
 
             visibility_action = visibility_track.strips[0].action
