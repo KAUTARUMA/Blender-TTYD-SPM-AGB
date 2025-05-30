@@ -1,2 +1,5 @@
 *.blend
+*.blend1
+*.png
+
 __pycache__/
