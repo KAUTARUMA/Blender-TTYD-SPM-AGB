@@ -1,4 +1,5 @@
 from collections import defaultdict
+import math
 import re
 import unicodedata
 import bmesh
@@ -9,10 +10,9 @@ import importlib.util
 from math import radians
 from mathutils import Matrix, Vector
 
-SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # i guess we're doubling up
+SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import sys
-
 sys.path.append(SCRIPT_DIR)
 
 from ttyd_agb_structs import *
@@ -31,7 +31,6 @@ def get_simple_mat_for_tex(texture_path, name):
     new_material.name = name
     new_material.use_nodes = True
     bsdf = new_material.node_tree.nodes['Principled BSDF']
-    # bsdf.inputs['Specular'].default_value = 0
     tex_image = new_material.node_tree.nodes.new('ShaderNodeTexImage')
     tex_image.image = bpy.data.images.load(texture_path)
     new_material.node_tree.links.new(bsdf.inputs['Base Color'], tex_image.outputs['Color'])
@@ -171,7 +170,7 @@ def group_to_object(group, collection, parent=None, parent_group=None): # parent
         transform = transform @ origin_offset.inverted()
         cur_object.data.transform(origin_offset)
 
-    # if cur_object.parent and cur_object.parent.type == 'MESH':
+    # if cur_object.parent:
     #     parent_pivot = parent_gt.transform_rotation_pivot
     #     parent_scale = scale_matrices[cur_object.parent]
     #     transform = parent_scale.inverted() @ Matrix.Translation(Vector((-parent_pivot.x, -parent_pivot.y, -parent_pivot.z))) @ parent_scale @ transform
@@ -254,7 +253,9 @@ if __name__ == "__main__":
     track.name = f'{armature.name}_rig'
 
     track_position = 1
-
+    
+    scene.render.fps = 60
+    # animation parsing
     for anim in agb.anims:
         data = anim.data
         if not data:
@@ -288,26 +289,121 @@ if __name__ == "__main__":
         #regionend
 
         for bone in armature.pose.bones:
-            for property in ['location', 'rotation_quaternion', 'scale']:
-                prop_data = getattr(bone, property, None)
-                if prop_data is None:
-                    continue
+            if bone.name not in agb_data: continue
 
-                for i in range(4 if property == 'rotation_quaternion' else 3):
-                    fcurve = action.fcurves.new(data_path=f'pose.bones["{bone.name}"].{property}', index=i)
-                    if len(prop_data) > i:
-                        fcurve.keyframe_points.insert(1, prop_data[i])
-                        fcurve.keyframe_points.insert(data.keyframe_count, prop_data[i])
+            group = agb_data[bone.name]["group"]
 
-            #region object visibility actions
-            if bone.name not in agb_data.keys(): continue
-                
+            group_id = group.visibility_group_id
+            base_id = group.transform_base_index
+
+            #region group animations
+            bone.rotation_mode = 'XYZ'
+
+            channel_indices = {
+                0: ("location", 0),
+                1: ("location", 1),
+                2: ("location", 2),
+                3: ("scale", 0),
+                4: ("scale", 1),
+                5: ("scale", 2),
+                6: ("rotation_euler", 0),  # in 2deg
+                7: ("rotation_euler", 1),
+                8: ("rotation_euler", 2),
+
+                # additional channels that i have no idea what to do with
+                9: ("[\"joint_post_rotation\"]", 0),
+                10: ("[\"joint_post_rotation\"]", 1),
+                11: ("[\"joint_post_rotation\"]", 2),
+                12: ("[\"rotation_pivot\"]", 0),
+                13: ("[\"rotation_pivot\"]", 1),
+                14: ("[\"rotation_pivot\"]", 2),
+                15: ("[\"scale_pivot\"]", 0),
+                16: ("[\"scale_pivot\"]", 1),
+                17: ("[\"scale_pivot\"]", 2),
+                18: ("[\"rotation_offset\"]", 0),
+                19: ("[\"rotation_offset\"]", 1),
+                20: ("[\"rotation_offset\"]", 2),
+                21: ("[\"scale_offset\"]", 0),
+                22: ("[\"scale_offset\"]", 1),
+                23: ("[\"scale_offset\"]", 2),
+            }
+
+            # reconstruct absolute values per transform offset
+            frame_values = {}
+            current_values = {}
+
+            for keyframe in data.keyframes:
+                frame = keyframe.time
+                frame_values[frame] = {}
+
+                delta_base = keyframe.group_transform_data_delta_base_index
+                delta_count = keyframe.group_transform_data_delta_count
+
+                rel_index = 0
+                transform_offset = 0
+
+                for delta in data.group_transform_data_deltas[delta_base : delta_base + delta_count]:
+                    rel_index = delta.index_delta
+                    transform_offset += rel_index
+
+                    value = delta.value_delta / 16.0
+                    abs_index = transform_offset
+
+                    channel_index = abs_index - base_id
+                    if channel_index >= 3 and channel_index <= 5: # if scale
+                        prev_value = current_values.get(abs_index, 1.0)
+                    else:
+                        prev_value = current_values.get(abs_index, 0.0)
+                    
+                    new_value = prev_value + value
+                    current_values[abs_index] = new_value
+
+                    frame_values[frame][abs_index] = (new_value, delta.tangent_in_deg, delta.tangent_out_deg)
+
+                # fill in any values not modified this frame with previous values
+                for i in range(base_id, base_id + len(channel_indices)):
+                    if i not in frame_values[frame]:
+                        if i in current_values:
+                            frame_values[frame][i] = (current_values[i], None, None)
+            
+            # Apply keyframes to fcurves
+            for i in range(len(channel_indices)):
+                abs_index = base_id + i
+
+                if i > 8: continue
+
+                data_path, axis = channel_indices[i]
+
+                fcurve = action.fcurves.new(data_path=f'pose.bones["{bone.name}"].{data_path}', index=axis)
+
+                for frame, values in frame_values.items():
+                    if abs_index in values:
+                        delta_info = values[abs_index]
+                        value = delta_info[0]
+
+                        if i >= 6 and i <= 8:
+                            value = value * (math.pi/180)
+
+                        key = fcurve.keyframe_points.insert(frame, value)
+
+                        if delta_info[1] != None and delta_info[2] != None:
+                            continue # broken atm
+                            tangent_in = math.tan(math.radians(delta_info[1])) if delta_info[1] is not None else 0.0
+                            tangent_out = math.tan(math.radians(delta_info[2])) if delta_info[2] is not None else 0.0
+                            key.handle_left_type = 'FREE'
+                            key.handle_right_type = 'FREE'
+
+                            delta = 1.0
+                            key.handle_left.y = key.co.y - tangent_in * delta
+                            key.handle_left.x = key.co.x - delta
+                            key.handle_right.y = key.co.y + tangent_out * delta
+                            key.handle_right.x = key.co.x + delta
+            #regionend
+
+            #object visibility actions    
             object = agb_data[bone.name]["object"]
             if object is None:
                 continue
-
-            group = agb_data[bone.name]["group"]
-            group_id = group.visibility_group_id
 
             if not object.animation_data:
                 object.animation_data_create()
@@ -345,6 +441,10 @@ if __name__ == "__main__":
         strip = track.strips.new(name=anim_name, start=track_position, action=action)
         strip.name = anim_name
 
-        track_position += data.keyframe_count
+        latest_keyframe = 0
+        for keyframe in data.keyframes:
+            if keyframe.time > latest_keyframe: latest_keyframe = keyframe.time
+        
+        track_position += math.ceil(latest_keyframe + 1)
         
     print("\n\n-- FINISHED IMPORT --\n\n")
