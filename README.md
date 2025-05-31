@@ -9,11 +9,14 @@ Notable bugs include
 2. Material settings are incorrect in game.
 
 Each animation must have at least 2 keyframes.
-The seperate `_vis` tracks are for object visibility, this is controlled by the "Show In Viewport" option (you have to enable it in the project tree)
+The seperate `_vis` tracks are for object visibility, this is controlled by the "Show In Viewport" option. (you have to enable it in the project tree)
 
 Textures *must* be named like so:
 MODELNAME--TEXTUREID
 This is the default naming scheme used by BrawlBox.
+
+Animations that you want to export must be both under the armature, and start with "!".
+If you'd like an animation to loop, add an "@" after the "!".
 
 A proper tutorial will come eventually, but for now just look at [this video](https://discord.com/channels/480157509261459468/846130782065131521/1377098630321668289). ((if you cant see it join [this server](https://discord.gg/pgUvzTE5E5)))
 
