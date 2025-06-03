@@ -17,27 +17,37 @@ sys.path.append(SCRIPT_DIR)
 
 from ttyd_agb_structs import *
 
-MODEL_NAME = 'FRY_slit'
+MODEL_NAME = 'FRY_dash'
 TEX_DIR = MODEL_NAME + '_tex'
 
 armature = bpy.data.objects.new('Armature', bpy.data.armatures.new('Armature'))
 
 materials = {}
-def get_simple_mat_for_tex(texture_path, name):
-    if texture_path in materials:
-        return materials[texture_path]
+texture_sequence = []
+
+def get_simple_mat_for_tex(texture_id, sampler_index):
+    if texture_id in materials:
+        return materials[texture_id][0]
 
     new_material = bpy.data.materials.new('mat')
-    new_material.name = name
+    new_material.name = f'{MODEL_NAME}_{texture_id}'
     new_material.use_nodes = True
     bsdf = new_material.node_tree.nodes['Principled BSDF']
+
     tex_image = new_material.node_tree.nodes.new('ShaderNodeTexImage')
-    tex_image.image = bpy.data.images.load(texture_path)
+    tex_image.image = bpy.data.images.load(texture_sequence[0])
+    tex_image.image.source = 'SEQUENCE'
+
+    tex_image.image_user.frame_start = 1
+    tex_image.image_user.frame_duration = 1
+    tex_image.image_user.frame_offset = texture_id - 1
+    tex_image.image_user.use_auto_refresh = True
+
     new_material.node_tree.links.new(bsdf.inputs['Base Color'], tex_image.outputs['Color'])
     new_material.node_tree.links.new(bsdf.inputs['Alpha'], tex_image.outputs['Alpha'])
     new_material.surface_render_method = 'BLENDED'
 
-    materials[texture_path] = new_material
+    materials[texture_id] = (new_material, sampler_index)
     return new_material
 
 
@@ -116,7 +126,7 @@ def group_to_object(group, collection, parent=None, parent_group=None): # parent
                 sampler = agb.samplers[sampler_index]
                 texture = agb.textures[sampler.texture_base_id]
 
-                new_material = get_simple_mat_for_tex(os.path.join(TEX_DIR, f'{MODEL_NAME}--{texture.tpl_index}.png'), f'{MODEL_NAME}_{texture.tpl_index}')
+                new_material = get_simple_mat_for_tex(texture.tpl_index, sampler_index)
                 shape_mesh.materials.append(new_material)
 
             for polygon in agb.polygons[subshape.polygon_base_index:subshape.polygon_base_index + subshape.polygon_count]:
@@ -210,6 +220,10 @@ if __name__ == "__main__":
     if not os.path.exists(TEX_DIR):
         raise FileNotFoundError(f"Texture directory does not exist: {repr(TEX_DIR)}")
     
+    for file in sorted(os.listdir(TEX_DIR)):
+        if file.startswith(f"{MODEL_NAME}--"):
+            texture_sequence.append(os.path.join(TEX_DIR, file))
+    
     with open(MODEL_FILE, 'rb') as f:
         agb = agb_read(f)
 
@@ -259,11 +273,7 @@ if __name__ == "__main__":
         # why the hell is base info a table lol
         anim_name = f'!' + ('@' if data.base_info[0].loop == 1 else '') + f'{anim.name}'
         action = bpy.data.actions.new(anim_name)
-        action.use_fake_user = True
-
-        track = armature.animation_data.nla_tracks.new()
-        track.name = anim_name
-        track.mute = True
+        # action.use_fake_user = True
 
         #region group visibility parsing
         frames_visibility = defaultdict(dict)
@@ -286,6 +296,33 @@ if __name__ == "__main__":
                     current_visibility[visgroup_id] = 0
 
                 frames_visibility[keyframe.time][visgroup_id] = current_visibility[visgroup_id]
+        #regionend
+
+        #region material animation parsing
+        current_material_values = {}
+        last_mat_values = {}
+
+        for keyframe in data.keyframes:
+            for i in range(keyframe.texture_coordinate_transform_delta_count):
+                delta = data.texture_coordinate_transform_deltas[keyframe.texture_coordinate_transform_delta_base_index + i]
+
+                material = next((materials[n][0] for n in materials if materials[n][1] == delta.index_delta), None)
+                if not material:
+                    continue
+
+                tex_node = next((n for n in material.node_tree.nodes if n.type == 'TEX_IMAGE'), None)
+                if not tex_node:
+                    continue
+                
+                last_value = last_mat_values.get(delta.index_delta, tex_node.image_user.frame_offset + 1)
+
+                last_value += delta.frame_ext_delta
+                last_mat_values[delta.index_delta] = last_value
+
+                if not current_material_values.get(keyframe.time):
+                    current_material_values[keyframe.time] = {}
+
+                current_material_values[keyframe.time] = (delta.index_delta, last_value)
         #regionend
 
         for bone in armature.pose.bones:
@@ -402,16 +439,13 @@ if __name__ == "__main__":
                             key.handle_right.x = key.co.x + delta
             #regionend
 
-            #object visibility actions    
+            #region object visibility actions    
             object = agb_data[bone.name]["object"]
             if object is None:
                 continue
 
             if not object.animation_data:
                 object.animation_data_create()
-            
-            obj_track = object.animation_data.nla_tracks.new()
-            obj_track.name = f'{anim.name}_{object.name}_vis'
             
             action_name = f"{anim.name}_{object.name}_vis"
             obj_action = bpy.data.actions.new(name=action_name)
@@ -427,11 +461,57 @@ if __name__ == "__main__":
                     hidden = not visibility_at_frame
                     fcurve.keyframe_points.insert(frame, hidden)
             
+            obj_track = object.animation_data.nla_tracks.new()
+            obj_track.name = f'{anim.name}_{object.name}_vis'
+            obj_track.mute = True
+            
             strip = obj_track.strips.new(name=action_name, start=1, action=obj_action)
             strip.name = action_name
             #regionend
+
+        #region material tex actions
+        for tex_id in materials:
+            material_tuple = materials[tex_id]
+            material = material_tuple[0]
+
+            tex_node = next((n for n in material.node_tree.nodes if n.type == 'TEX_IMAGE'), None)
+            if not tex_node:
+                continue
+
+            if not material.animation_data:
+                material.animation_data_create()
+
+            data_path = f'node_tree.nodes["{tex_node.name}"].image_user.frame_offset'
+
+            action_name = f"{anim.name}_{material.name}_tex"
+
+            mat_action = bpy.data.actions.new(name=action_name)
+            material.animation_data.action = mat_action
+
+            fcurve = mat_action.fcurves.find(data_path)
+
+            if not fcurve:
+                fcurve = mat_action.fcurves.new(data_path=data_path)
+
+            for frame in sorted(current_material_values.keys()):
+                material_values = current_material_values[frame]
+                if material_values[0] != material_tuple[1]: continue
+
+                key = fcurve.keyframe_points.insert(frame, material_values[1] - 1)
+                key.interpolation = 'CONSTANT'
+            
+            mat_track = material.animation_data.nla_tracks.new()
+            mat_track.name = action_name
+            mat_track.mute = True
+
+            strip = mat_track.strips.new(name=mat_action.name, start=1, action=mat_action)
+        #regionend
         
+        track = armature.animation_data.nla_tracks.new()
+        track.name = anim_name
+        track.mute = True
         strip = track.strips.new(name=action.name, start=1, action=action)
-        strip.name = action.name
+    
+    bpy.context.scene.frame_set(bpy.context.scene.frame_current)
         
     print("\n\n-- FINISHED IMPORT --\n\n")
